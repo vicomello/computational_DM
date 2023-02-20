@@ -1,0 +1,947 @@
+---
+title: "final_project_official"
+author: "Victoria Oldemburgo de Mello"
+date: '2022-12-15'
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(reshape2)
+library(plotly)
+
+```
+
+# Building RL model
+
+Some of the functions we will need:
+```{r}
+
+actions <- c(1,2)
+
+# function that calculates probabilityes based on softmax with inverse temp
+softmax_prob <- function(values, actions, tau) {
+  # Calculate the numerator as exp(value[action] / tau)
+  numerator <- exp(values[actions] * tau)
+  # Calculate the denominator as the sum of exp(value / tau) for all actions
+  denominator <- sum(exp(values * tau))
+  # Return the probability as the ratio of the numerator and the denominator
+  probability <- numerator / denominator
+  return(probability)
+}
+
+# function that selects actions based on the values of softmax
+select_action <- function(actions, values){
+  action <- sample(1, x = actions, prob = values, replace = TRUE)
+  return(action)
+}
+
+# function that updated the values (Prediction Error)
+update_values <- function(values, action, reward, LR) {
+  # Update the value of the selected action by delta times the temporal-difference error
+  values[action] <- values[action] + LR * (reward - values[action])
+  return(values)
+}
+
+```
+
+
+1) simulation-based model
+```{r}
+
+# simulates n choices for a single participant
+simulate_p <- function(LR, tau, ntrials, p_tf = .5, p_acc = .5, mean_reward_true = 1, sd_reward_true = .25, mean_reward_false = 1.4, sd_reward_false = .25, backfire_multiplier_f = 5, backfire_multiplier_i = 5, interest_multiplier = .375, sd_interest_multiplier = .1, backfire_false = .05, backfire_interest = .05){
+
+  
+  # simulating preference of the user
+  interests = sample(c(0,1,2,3), 10, replace = TRUE) # test this later (todo)
+
+  action_values <- list(c(0, 0))
+  actions <- c(1,2) # 1 is true/false task, 2 is interest task
+  action = reward = values_1 = values_2 = stim_veracity = accuracy_tf = NA
+  output <- vector(mode="list", length=7)
+  names(output) <- c("action", "reward", "values_1", "values_2", "interests", "veracity_head", "accuracy")
+  
+  for(trial in 1:ntrials){
+    # simulating characteristics of the stimulus
+    # this is the topics of the headline
+    stimulus = sample(c(TRUE, FALSE), 10, replace = TRUE, prob = c(.25, .75))
+    # this is the veracity of the headline, p_tf is proportion of true headlines
+    stimulus_veracity <- sample(c(TRUE, FALSE), 1, replace = TRUE, prob = c(p_tf, 1-p_tf))
+    
+    # calculating probabilities based on softmax
+    values <- softmax_prob(action_values[[trial]], actions, tau)
+    values_1[trial] <- values[1]
+    values_2[trial] <- values[2]
+    
+    # selecting action based on softmax
+    action[trial] <- select_action(actions, values)
+    
+    accuracy <- sample(c(1, 0), 1, replace = TRUE, prob = c(p_acc, 1-p_acc))
+    
+    if (action[trial] == 1){ #if truth task is selected
+      
+      reward[trial] <- 
+        if (stimulus_veracity == 1) { # if stimulus is true
+          if (accuracy == 1){ # if participant correctly guessed it is true
+            rnorm(1, mean = mean_reward_true, sd = sd_reward_true) # reward is small but very certain
+          }
+          else {
+          0 # if he guesses it was false when it's true, no sharing and no rewards
+          }
+     } 
+        else { 
+          if(accuracy == 1){
+            0 # if it's fake and participant get it right, don't share and reward = 0
+          }
+        else {# if stimulus is false but participant says it's true
+          sample(c(0, -1), 1, replace = TRUE, prob = c(1-backfire_false, backfire_false)) *
+            rnorm(1, mean = mean_reward_false * backfire_multiplier_f, sd = sd_reward_false) +
+            rnorm(1, mean = mean_reward_false, sd = sd_reward_false)
+            # reward is big (viralizes more easily) but can backfire
+        }
+        }
+    }
+    else { # if interest task is selected
+      # reward is
+      reward[trial] <- sum(interests * stimulus) * rnorm(1, mean = interest_multiplier, sd = sd_interest_multiplier) +
+      sample(c(0, -1), 1, replace = TRUE, prob = c(1-backfire_interest, backfire_interest)) *
+            rnorm(1, mean = mean_reward_false * backfire_multiplier_i, sd = sd_reward_false)
+    }
+    stim_veracity[trial] <- stimulus_veracity
+    accuracy_tf[trial] <- accuracy
+    action_values[[trial+1]] <- update_values(values, action[trial], reward[trial], LR)
+  }
+  output[[1]] <- action
+  output[[2]] <- reward
+  output[[3]] <- values_1
+  output[[4]] <- values_2
+  output[[5]] <- interests
+  output[[6]] <- stim_veracity
+  output[[7]] <- accuracy_tf
+  return(output)
+}
+
+teste <- simulate_p(.5, 1, 100)
+
+```
+
+Examining the rewards to see if they are somewhat balanced at first:
+(Playing around)
+
+```{r}
+
+# initial values 
+mean_reward_true = 1
+sd_reward_true = .25
+mean_reward_false = 1
+sd_reward_false = .25
+backfire_multiplier = 5
+interest_multiplier = .3
+sd_interest_multiplier = .1
+backfire_false = .05
+backfire_interest = .05
+
+# reward for interests
+r_interests <- NA
+
+for (i in 1:100) {
+  interests = sample(c(0,1,2,3), 10, replace = TRUE)
+  stimulus = sample(c(TRUE, FALSE), 10, replace = TRUE, prob = c(.25, .75))
+  r_interests[i] = sum(interests * stimulus)
+}
+
+mean(r_interests)
+sd(r_interests)
+# could be multiplied by a factor
+
+interest_multiplier = .375
+sd_interest_multiplier = .1
+
+r_interests = NA
+for (i in 1:10000) {
+  interests = sample(c(0,1,2,3), 10, replace = TRUE)
+  stimulus = sample(c(TRUE, FALSE), 10, replace = TRUE, prob = c(.25, .75))
+  r_interests[i] <- sum(interests * stimulus) * rnorm(1, mean = interest_multiplier, sd = sd_interest_multiplier) + sample(c(0, -1), 1, replace = TRUE, prob = c(1-backfire_false, backfire_false)) * rnorm(1, mean = mean_reward_false * backfire_multiplier, sd = sd_reward_false)
+}
+
+mean(r_interests)
+sd(r_interests)
+
+# multiplier as .375 makes it more likely to give a mean of 1
+# sd doesn't change much
+
+# reward for true
+r_true <- NA
+
+for (i in 1:100) {
+  r_true[i] <- rnorm(1, mean = mean_reward_true, sd = sd_reward_true)
+}
+mean(r_true)
+sd(r_true)
+
+
+# we want the reward for false to have (initially) same mean but larger sd than reward for true
+# reward for sharing false
+r_false <- NA
+# testing values (originally 1 and .25)
+mean_reward_false = 1.4
+sd_reward_false = .25
+
+for (i in 1:1000) {
+  reward <- sample(c(0, -1), 1, replace = TRUE, prob = c(1-backfire_false, backfire_false)) *
+            rnorm(1, mean = mean_reward_false * backfire_multiplier, sd = sd_reward_false) +
+            rnorm(1, mean = mean_reward_false, sd = sd_reward_false)
+  r_false[i] = reward
+}
+
+mean(r_false)
+sd(r_false)
+# the mean did change the mean reward, but changing sd_reward_false did not change the sd.
+
+```
+
+
+Now let's simulate decisions for multiple participants
+```{r}
+
+sim_decisions <- function(parameters, ntrials, participants,p_tf = .5, p_acc = .5, mean_reward_true = 1, sd_reward_true = .25, mean_reward_false = 1.4, sd_reward_false = .25, backfire_multiplier_f = 5, backfire_multiplier_i = 5, interest_multiplier = .375, sd_interest_multiplier = .1, backfire_false = .05, backfire_interest = .05){
+  # parameters are c(LR, tau)
+  sessions_all <- as.data.frame(matrix(data = NA, ncol = 8, nrow = ntrials))
+  colnames(sessions_all) <- c("participant", "action", "reward", "values_1", "values_2", "interests", "veracity_head", "accuracy")
+  total_data <- vector(mode = "list", length = 0)
+  for (person in 1:participants){
+    
+    session <- simulate_p(parameters[1], parameters[2], ntrials, p_tf, p_acc, mean_reward_true, sd_reward_true, mean_reward_false, sd_reward_false, backfire_multiplier_f, backfire_multiplier_i, interest_multiplier, sd_interest_multiplier, backfire_false, backfire_interest) # LR and tau
+    
+    sessions_all[[1]] <- person
+    sessions_all[[2]] <- session$action
+    sessions_all[[3]] <- session$reward
+    sessions_all[[4]] <- session$values_1
+    sessions_all[[5]] <- session$values_2
+    sessions_all[[6]] <- list(session$interests)
+    sessions_all[[7]] <- session$veracity_head
+    sessions_all[[8]] <- session$accuracy
+    total_data <- rbind(total_data, sessions_all)
+
+  }
+  return(total_data)
+}
+
+output <- sim_decisions(params, 100, 100)
+
+```
+
+It seems that with these values of LR and tau, interest task is being picked 55% of time (not ideal).
+Let's try to estimate values that approach the benchmark. 
+
+# Estimating LR and tau
+
+In the original dataset, people preferred the true task 52.95% of the time.
+SD was 13.99%
+
+What values of tau and LR best reproduce this pattern?
+
+## Playing around
+
+First, let's just play around: if we change tau, how much it changes mean and sd of choices?
+
+```{r}
+
+# assuming a LR of .2
+
+values <- seq(from=0, to=10, by=.1)
+
+means = NA
+for (value in 1:101){
+  par <- c(.2, values[value])
+  output <- sim_decisions(par, 100, 100)
+  means[value] = mean(output$action)
+}
+
+plot_ly(x=values, y=means, type="scatter", mode="markers")
+
+
+```
+
+It seems like values around 3 ~52% for truth task
+
+Let's do this again but focusing on values around 3
+
+```{r}
+# assuming a LR of .2
+values <- seq(from=2.9, to=3.1, by=.01)
+
+means = NA
+for (value in 1:21){
+  par <- c(.2, values[value])
+  output <- sim_decisions(par, 100, 100)
+  means[value] = mean(output$action)
+}
+plot_ly(x=values, y=means, type="scatter", mode="markers")
+```
+
+It seems like 2.95 might yield the proportion we want.
+```{r}
+means = NA
+for (value in 1:100){
+  par <- c(.2, 2.95)
+  output <- sim_decisions(par, 100, 100)
+  means[value] = mean(output$action)
+}
+
+mean(means)
+sd(means)
+
+plot_ly(x=1, y=means, type="scatter", mode="markers")
+```
+
+
+What about if LR is different? do we get different pattern?
+```{r}
+# assuming a tau of 2.95
+values <- seq(from=0, to=1, by=.01)
+means = NA
+for (value in 1:101){
+  par <- c(values[value], 2.95)
+  output <- sim_decisions(par, 100, 100)
+  means[value] = mean(output$action)
+}
+plot_ly(x=values, y=means, type="scatter", mode="markers")
+```
+
+Let's zoom in to see the best values that make choices around 1.47~1.48
+
+```{r}
+# assuming a tau of 2.95
+values <- seq(from=.1, to=.25, by=.001)
+
+means = NA
+for (value in 1:151){
+  par <- c(values[value], 2.95)
+  output <- sim_decisions(par, 100, 100)
+  means[value] = mean(output$action)
+}
+plot_ly(x=values, y=means, type="scatter", mode="markers")
+```
+
+LR of .15 seems to better arrive at this value. 
+
+
+Using mean squarred error to estimate parameters that best imitate this pattern.
+## Mean squared error.
+
+
+```{r}
+
+
+sq_errs_mean = tau_value = LR_value = sq_errs_sd = NA
+
+for (rep in 1: 500){
+  parameters[1] = runif(1, 0, 1) # LR
+  parameters[2] = runif(1, 0, 20) # tau
+  results <- sim_decisions(parameters, 100, 100)
+  # true values to be minimized
+  true_mean <- 2 - .5295 # actions are coded as 1 and 2, so have to rescale
+  true_sd <- .1399
+  
+  # actual values form simulation
+  sim_mean <- mean(results$action)
+  sim_sd <- sd(results$action)
+  
+  # mean squared error for mean
+  err_mean <- (sim_mean - true_mean)^2
+  sq_errs_mean[rep] <- err_mean
+  
+  # mean squared error for sd
+  err_sd <- (sim_sd - true_sd)^2
+  sq_errs_sd[rep] <- err_sd
+  
+  LR_value[rep] <- parameters[1]
+  tau_value[rep] <- parameters[2] 
+  
+}
+
+plot_ly(x=LR_value, y=tau_value, z=sq_errs_mean, type="scatter3d", mode="markers")
+plot_ly(x=LR_value, y=tau_value, z=sq_errs_sd, type="scatter3d", mode="markers")
+plot_ly(x=sq_errs_mean, y=sq_errs_sd, type="scatter", mode="markers")
+
+
+# many values minimized the mean squared error for the means, but they were not the same values
+# that minimized squared error for sd
+
+# values around .15 LR minimized the mean (could also be .8, but .15 sounds more reasonable)
+# many values of tau minimized the mean at .16 LR
+
+# values around .58 LR and 29 tau minimized the sd error
+
+
+```
+
+What happens to the sd error if we use values that minimize the mean?
+
+```{r}
+
+tau_value = LR_value = sq_errs_sd = NA
+
+# LR and tau
+parameters <- c(.16, 10)
+LR_value <- parameters[1]
+tau_value <- parameters[2]
+
+for (rep in 1: 100){
+  results <- sim_decisions(parameters, 100, 100, p_tf = .5, p_acc = .5,
+                           mean_reward_true = 1,sd_reward_true = .25, mean_reward_false =1,
+                           sd_reward_false = .25, interest_multiplier = .3,
+                           sd_interest_multiplier = .15, backfire_false = .05,
+                           backfire_interest = .05)
+  # true values to be minimized
+  true_sd <- .1399
+  
+  # actual values form simulation
+  sim_sd <- sd(results$action)
+  
+  # mean squared error for sd
+  err_sd <- (sim_sd - true_sd)^2
+  sq_errs_sd[rep] <- err_sd
+  
+}
+
+plot_ly(x=LR_value, y=tau_value, z=sq_errs_sd, type="scatter3d", mode="markers")
+
+```
+
+SD error stays between .115 and .130.
+
+From now on, let's stick to parameters <- c(.15, 2.95) (LR and tau)
+
+# Model Fitting
+
+Can we actually recover the params?
+
+1) create function that returns log likelihood for all participants
+```{r}
+
+# LR and tau
+par = params = parameters = c(.15, 2.95)
+
+# calculating the log likelihood for a single participant
+model_fit_p <- function(data, par, ntrials){
+
+  LR = par[1]
+  tau = par[2]
+  likelihood = NA
+  actionValues = c(0,0)
+  for(t in 1:ntrials){
+    prob_action <- softmax_prob(actionValues, data$action[t], tau)
+    likelihood[t] <- -1*log(prob_action)
+    
+    PredictionError = data$reward[t] - actionValues[data$action[t]]
+    actionValues[data$action[t]] = actionValues[data$action[t]] + LR * PredictionError
+  }
+  
+  # Compute total negative log-likelihood of all observations
+  all_ll <- sum(likelihood)
+  #all_ll[is.infinite(all_ll) & sign(all_ll) > 0] = .Machine$double.xmax
+  return(all_ll)
+}
+
+teste <- model_fit_p(output, params, 100)
+
+## Now let's calculate it for all participants
+params <- c(.15, 2.95)
+
+model_fit <- function(data, par, ntrials, participants){
+  LR <- par[1]
+  tau <- par[2]
+  total_likelihood = NA
+  for (p in 1:participants){
+    data_p <- filter(data, participant==p)
+    likelihood_participant <- model_fit_p(data_p, par, ntrials)
+    total_likelihood[p] <- likelihood_participant
+  }
+  total = sum(total_likelihood)
+  total[is.infinite(total) & sign(total) > 0] = .Machine$double.xmax
+  return(total)
+}
+
+probs <- model_fit(output, par, 100,  100)
+
+```
+
+2) Recover params with optim
+
+```{r}
+
+fittedLR = fittedTau = realLR = realTau = vector(mode = 'numeric', length = 100)
+
+for(sim in 1:100){
+  params <- c(rnorm(1, mean = .15, sd = .01), rnorm(1, mean = 2.95, sd = .1))
+  realLR[sim] <- params[1]
+  realTau[sim] <- params[2]
+  output <- sim_decisions(params, 100, 100)
+  results = optim(par = c(.5, .5), model_fit, data = output, ntrials = 100, participants = 100, lower = c(0,0), upper = c(1,20), method = 'L-BFGS-B')
+  fittedLR[sim] = round(results$par[1], 5)
+  fittedTau[sim] = round(results$par[2], 5)
+}
+
+fitted <- data.frame(fittedLR)
+fitted$param <- "LR"
+colnames(fitted)[1] <- "fitted"
+fitted2 <- data.frame(fittedTau)
+fitted2$param <- "tau"
+colnames(fitted2)[1] <- "fitted"
+fitted_all <- rbind(fitted, fitted2)
+
+real <- data.frame(realLR)
+real$param <- "LR"
+colnames(real)[1] <- "real"
+real2 <- data.frame(realTau)
+real2$param <- "tau"
+colnames(real2)[1] <- "real"
+real_all <- rbind(real, real2)
+
+
+datarecovery <- data.frame(fitted_all, real_all)
+datarecoveryLR <- filter(datarecovery, param=="LR")
+param_recovery <- ggplot(data = datarecoveryLR, aes(x = fitted, y = real))+
+  geom_point() + ggtitle("LR")
+
+param_recovery
+
+datarecoverytau <- filter(datarecovery, param=="tau")
+param_recovery <- ggplot(data = datarecoverytau, aes(x = fitted, y = real))+
+  geom_point() + ggtitle("Tau")
+
+param_recovery
+
+
+```
+
+It recovered LR, but not tau. 
+
+# Part 2: Exploring different behaviors by increasing rewards
+
+There are different params we can change to see how behavior changes. 
+What I want to know is:
+
+- How does increased mean for the reward (either true/false/interesting) change the proportion of choices?
+
+
+### Increasing reward for false news
+
+Increase 
+```{r}
+
+reward_multipliers = seq(from=1, to=2, by=.1)
+
+# mean for false news is 1.4. what happens if we increase the magnitude of this reward by 10 percent?
+mean_choices = sd_choices = choices = sds = proportion_true = mean_true = proportion_false = mean_false = NA
+for (i in 1:11) {
+  reward_multiplier = reward_multipliers[i]
+  for (n in 1:50) {
+    output <- sim_decisions(parameters, 100, 100, p_tf = .5, p_acc = .5, mean_reward_true = 1, sd_reward_true = .25, mean_reward_false = 1.4 * reward_multiplier, sd_reward_false = .25, backfire_multiplier_f = 5, backfire_multiplier_i = 5, interest_multiplier = .375, sd_interest_multiplier = .1, backfire_false = .05, backfire_interest = .05)
+    true = nrow(filter(output, action==1 & veracity_head==TRUE & accuracy==1 | action==2 & veracity_head==TRUE & reward != 0))
+    false = nrow(filter(output, action==1 & veracity_head==FALSE & accuracy==0 | action==2 & veracity_head==FALSE & reward != 0))
+    proportion_true[n] <- true / (true+false)
+    proportion_false[n] <- false / (true+false)
+    choices[n] <- mean(output$action)
+    sds[n] <- sd(output$action)
+  }
+  mean_choices[i] <- mean(choices)
+  sd_choices[i] <- mean(sds)
+  mean_true[i] <- mean(proportion_true)
+  mean_false[i] <- mean(proportion_false)
+  
+}
+
+reward_means <- reward_multipliers * 1.4
+data <- as.data.frame(cbind(mean_choices, sd_choices, reward_means, mean_true, mean_false, reward_multipliers))
+
+rewardbychoices <- ggplot(data, aes(x=reward_means, y=mean_choices)) + 
+  geom_point(colour="blue") +
+  geom_line(colour="blue") +
+  ylim(1.34, 1.50) +
+  ggtitle("Choice as a Function of Reward for False Content")
+  
+rewardbychoices
+
+```
+
+The more we increase the reward for sharing false news, the more the truth/false task is chosen.
+
+That makes sense.
+
+Let's see how this plays out with the proportion of true/false content shared:
+```{r}
+
+data2 <- melt(data, id.vars = c("reward_means", "mean_choices", "sd_choices", "reward_multipliers"))
+
+proportion_tf_1 <- ggplot(data2, aes(x=reward_multipliers, y=value, colour=variable)) + 
+  geom_point() +
+  geom_line() +
+  ylab("proportion of true/false headlines") +
+  ylim(.48, .52) +
+  ggtitle("R: False")
+
+proportion_tf_1
+
+```
+
+Increasing the reward for sharing false news doesn't seem to changed the proportion of true/false news shared.
+
+Let's now play with the proportion of reward for true and false headlines.
+Let's add a factor that either multiplies/divides the reward.
+
+## Increasing reward for true
+
+```{r}
+
+reward_multipliers = seq(from=1, to=2, by=.1)
+
+# mean for false news is 1.4. what happens if we increase the magnitude of this reward by 10 percent?
+mean_choices = sd_choices = choices = sds = proportion_true = mean_true = proportion_false = mean_false = NA
+for (i in 1:11) {
+  reward_multiplier = reward_multipliers[i]
+  for (n in 1:50) {
+    output <- sim_decisions(parameters, ntrials = 100, participant = 100, mean_reward_true = 1 * reward_multiplier)
+    true = nrow(filter(output, action==1 & veracity_head==TRUE & accuracy==1 | action==2 & veracity_head==TRUE & reward != 0))
+    false = nrow(filter(output, action==1 & veracity_head==FALSE & accuracy==0 | action==2 & veracity_head==FALSE & reward != 0))
+    proportion_true[n] <- true / (true+false)
+    proportion_false[n] <- false / (true+false)
+    choices[n] <- mean(output$action)
+    sds[n] <- sd(output$action)
+  }
+  mean_choices[i] <- mean(choices)
+  sd_choices[i] <- mean(sds)
+  mean_true[i] <- mean(proportion_true)
+  mean_false[i] <- mean(proportion_false)
+  
+}
+
+reward_means <- reward_multipliers * 1.4
+data_2 <- data.frame(mean_choices, sd_choices, reward_means, mean_true, mean_false, reward_multipliers)
+
+rewardbychoices_2 <- ggplot(data_2, aes(x=reward_means, y=mean_choices)) + 
+  geom_point(colour="blue") +
+  geom_line(colour="blue") +
+  ylim(1.34, 1.50) +
+  ggtitle("Choice as a Function of Reward for True Content")
+  
+rewardbychoices_2
+
+
+data_3 <- melt(data_2, id.vars = c("reward_means", "mean_choices", "sd_choices", "reward_multipliers"))
+
+proportion_tf2 <- ggplot(data_3, aes(x=reward_multipliers, y=value, colour=variable)) + 
+  geom_point() +
+  geom_line() +
+  ylab("proportion of true/false headlines") +
+  ylim(.48, .52) +
+  ggtitle("R: True")
+
+proportion_tf2
+
+```
+
+## Increasing reward for interesting
+```{r}
+
+reward_multipliers = seq(from=1, to=2, by=.1)
+
+# mean for false news is 1.4. what happens if we increase the magnitude of this reward by 10 percent?
+mean_choices = sd_choices = choices = sds = proportion_true = mean_true = proportion_false = mean_false = NA
+for (i in 1:11) {
+  reward_multiplier = reward_multipliers[i]
+  for (n in 1:50) {
+    output <- sim_decisions(parameters, ntrials = 100, participant = 100, interest_multiplier = .375 * reward_multiplier)
+    true = nrow(filter(output, action==1 & veracity_head==TRUE & accuracy==1 | action==2 & veracity_head==TRUE & reward != 0))
+    false = nrow(filter(output, action==1 & veracity_head==FALSE & accuracy==0 | action==2 & veracity_head==FALSE & reward != 0))
+    proportion_true[n] <- true / (true+false)
+    proportion_false[n] <- false / (true+false)
+    choices[n] <- mean(output$action)
+    sds[n] <- sd(output$action)
+  }
+  mean_choices[i] <- mean(choices)
+  sd_choices[i] <- mean(sds)
+  mean_true[i] <- mean(proportion_true)
+  mean_false[i] <- mean(proportion_false)
+  
+}
+
+
+data_3 <- data.frame(mean_choices, sd_choices, mean_true, mean_false, reward_multipliers)
+
+rewardbychoices_3 <- ggplot(data_3, aes(x=reward_multipliers, y=mean_choices)) + 
+  geom_point(colour="blue") +
+  geom_line(colour="blue") +
+  ggtitle("Choice as a Function of Reward for Interesting")
+  
+rewardbychoices_3
+
+
+data_4 <- melt(data_3, id.vars = c( "mean_choices", "sd_choices", "reward_multipliers"))
+
+proportion_tf3 <- ggplot(data_4, aes(x=reward_multipliers, y=value, colour=variable)) + 
+  geom_point() +
+  geom_line() +
+  ylab("proportion of true/false headlines") +
+  ylim(.48, .52) +
+  ggtitle("R: Interesting")
+
+proportion_tf3
+
+```
+
+## What happens to the choices when the reward is stronger for true vs false?
+
+What if just increasing one or the other they are both divided/multiplied by a factor?
+
+```{r}
+
+x <- seq(from = .1, to=2, by=.1)
+
+# reward starts larger to true headlines and the progressively becomes larger to false
+# reward true = mean_reward / x
+# reward false = mean reward * x
+mean_choices = sd_choices = choices = sds = multiplier = proportion_true = mean_true = proportion_false = mean_false = NA
+for (i in 1:20) {
+  reward_multiplier = x[i]
+  for (n in 1:50) {
+    output <- sim_decisions(parameters, ntrials = 100, participants = 100, mean_reward_true = 1 /reward_multiplier, mean_reward_false = 1.4 * reward_multiplier)
+    true = nrow(filter(output, action==1 & veracity_head==TRUE & accuracy==1 | action==2 & veracity_head==TRUE & reward != 0))
+    false = nrow(filter(output, action==1 & veracity_head==FALSE & accuracy==0 | action==2 & veracity_head==FALSE & reward != 0))
+    proportion_true[n] <- true / (true+false)
+    proportion_false[n] <- false / (true+false)
+    choices[n] <- mean(output$action)
+    sds[n] <- sd(output$action)
+  }
+  mean_choices[i] <- mean(choices)
+  sd_choices[i] <- mean(sds)
+  mean_true[i] <- mean(proportion_true)
+  mean_false[i] <- mean(proportion_false)
+}
+
+data3 <- data.frame(mean_choices, sd_choices, x, mean_true, mean_false)
+reward_by_choice <- ggplot(data=data3,aes(x=x, y=mean_choices)) + 
+  geom_point(colour="blue") +
+  geom_line(colour="blue") 
+
+reward_by_choice
+
+
+
+```
+Under this model, with mean reward values from .1 to .5, the preference is shifted for the interest task.
+With rewards from .5 to 1, the preference shifts to true task again until it reaches the equilibrium.
+With rewards from 1 to 2, the preference for true task increases, and the curve gets more steady.
+
+In other words: increasing the true reward relative to the false reward makes the preference shift for the interesting task. 
+
+
+how these rewards influence the proportion of true/false headlines shared?
+```{r}
+
+data4 <- melt(data3, id.vars = c("x", "mean_choices", "sd_choices"))
+
+proportion_tf_2 <- ggplot(data4, aes(x=x, y=value, colour=variable)) + 
+  geom_point() +
+  geom_line() +
+  ylab("proportion of true/false headlines")
+
+proportion_tf_2
+
+```
+
+Doesn't seem to change it systematically. 
+
+# How does the chances of backfiring for each choice change the choices?
+
+Both the rewards for sharing false and sharing interesting headlines are influenced by a chance of backfiring (originally .05). Backfiring is the chance of having large negative rewards.
+
+Let's find out!
+
+First: backfire for false news only (increasing odds)
+
+```{r}
+
+backfire_multipliers = seq(from=1, to=20, by=1)
+
+mean_choices = sd_choices = choices = sds = proportion_true = mean_true = proportion_false = mean_false = NA
+for (i in 1:20) {
+  x = backfire_multipliers[i]
+  for (n in 1:50) {
+    output <- sim_decisions(parameters,ntrials = 100, participants = 100, backfire_false = .05 * x)
+    choices[n] <- mean(output$action)
+    sds[n] <- sd(output$action)
+    true = nrow(filter(output, action==1 & veracity_head==TRUE & accuracy==1 | action==2 & veracity_head==TRUE & reward != 0))
+    false = nrow(filter(output, action==1 & veracity_head==FALSE & accuracy==0 | action==2 & veracity_head==FALSE & reward != 0))
+    proportion_true[n] <- true / (true+false)
+    proportion_false[n] <- false / (true+false)
+  }
+  mean_choices[i] <- mean(choices)
+  sd_choices[i] <- mean(sds)
+  mean_true[i] <- mean(proportion_true)
+  mean_false[i] <- mean(proportion_false)
+}
+
+
+odds_backfire <- backfire_multipliers * .05
+data7 <- as.data.frame(cbind(mean_choices, sd_choices, odds_backfire, mean_true, mean_false))
+backfire_choices <- ggplot(data7, aes(x=odds_backfire, y=mean_choices)) + 
+  geom_point(colour="blue") +
+  geom_line(colour="blue")
+
+backfire_choices
+
+```
+
+As the odds of backfiring for false news increase, people choose the interesting task more often (which does make sense)
+
+Backfire x proportion of T/F
+
+```{r}
+
+data8 <- melt(data7, id.vars = c("odds_backfire", "mean_choices", "sd_choices"))
+
+mean(data7$mean_true) #not different overall
+
+proportion_tf_3 <- ggplot(data8, aes(x=odds_backfire, y=value, colour=variable)) + 
+  geom_point() +
+  geom_line() +
+  ylim(.1, .9) +
+  ylab("t/f propotion")
+
+proportion_tf_3
+
+```
+
+
+What about the odds of backfiring for interesting?
+```{r}
+backfire_multipliers = seq(from=1, to=20, by=1)
+
+mean_choices = sd_choices = choices = sds = proportion_true = mean_true = proportion_false = mean_false = NA
+for (i in 1:20) {
+  x = backfire_multipliers[i]
+  for (n in 1:50) {
+    output <- sim_decisions(parameters, ntrials = 100, participants = 100, backfire_interest = .05 * x)
+    choices[n] <- mean(output$action)
+    sds[n] <- sd(output$action)
+    true = nrow(filter(output, action==1 & veracity_head==TRUE & accuracy==1 | action==2 & veracity_head==TRUE & reward != 0))
+    false = nrow(filter(output, action==1 & veracity_head==FALSE & accuracy==0 | action==2 & veracity_head==FALSE & reward != 0))
+    proportion_true[n] <- true / (true+false)
+    proportion_false[n] <- false / (true+false)
+  }
+  mean_choices[i] <- mean(choices)
+  sd_choices[i] <- mean(sds)
+  mean_true[i] <- mean(proportion_true)
+  mean_false[i] <- mean(proportion_false)
+  
+}
+
+odds_backfire <- backfire_multipliers * .05
+data9 <- as.data.frame(cbind(mean_choices, sd_choices, odds_backfire, mean_true, mean_false))
+backfire_interest <- ggplot(data9, aes(x=odds_backfire, y=mean_choices)) + 
+  geom_point(colour="blue") +
+  geom_line(colour="blue")
+
+backfire_interest
+
+```
+
+Ok, as the chance of backfiring for interesting increases, so does the odds of choosing truth task.
+
+What about propotion of true/false?
+```{r}
+
+data10 <- melt(data9, id.vars = c("odds_backfire", "mean_choices", "sd_choices"))
+
+mean(data9$mean_true) 
+
+proportion_tf_4 <- ggplot(data10, aes(x=odds_backfire, y=value, colour=variable)) + 
+  geom_point() +
+  geom_line() +
+  ylab("t/f proportion")+
+  ylim(.1, .9)
+
+proportion_tf_4
+
+```
+
+## playing with sds
+
+### What about the sd of sharing false? How does choice change if we change it?
+
+Previously we saw that increasing reward for false news made people share false news more often (expected).
+
+But what about the sd? Does changing the sd for false rewards actually change the proportion of choices?
+
+```{r}
+
+sd_multipliers = seq(from=1, to=2, by=.01)
+
+# sd for false news reward is .25. what happens if we increase the magnitude of this reward by 10 percent?
+mean_choices = sd_choices = choices = sds = NA
+for (i in 1:101) {
+  sd_multiplier = sd_multipliers[i]
+  for (n in 1:50) {
+    output <- sim_decisions(parameters, ntrials = 100, participants = 100, sd_reward_false = .25 * sd_multiplier)
+    choices[n] <- mean(output$action)
+    sds[n] <- sd(output$action)
+  }
+  mean_choices[i] <- mean(choices)
+  sd_choices[i] <- mean(sds)
+  
+}
+
+data5 <- as.data.frame(cbind(mean_choices, sd_choices, sd_multipliers))
+ggplot(data5, aes(x=sd_multipliers, y=mean_choices)) + 
+  geom_point(colour="blue") +
+  geom_line(colour="blue")
+
+```
+
+They get more erratic, but that doesn't change the overall choice. 
+
+How does sd of truth change choices?
+
+```{r}
+
+sd_multipliers = seq(from=1, to=2, by=.05)
+
+# sd for false news reward is .25. what happens if we increase the magnitude of this reward by 10 percent?
+mean_choices = sd_choices = choices = sds = NA
+for (i in 1:21) {
+  sd_multiplier = sd_multipliers[i]
+  for (n in 1:50) {
+    output <- sim_decisions(parameters, ntrials = 100, participants = 100, sd_reward_true = .25 * sd_multiplier)
+    choices[n] <- mean(output$action)
+    sds[n] <- sd(output$action)
+  }
+  mean_choices[i] <- mean(choices)
+  sd_choices[i] <- mean(sds)
+  
+}
+
+data6 <- as.data.frame(cbind(mean_choices, sd_choices, sd_multipliers))
+ggplot(data6, aes(x=sd_multipliers, y=mean_choices)) + 
+  geom_point(colour="blue") +
+  geom_line(colour="blue")
+
+
+```
+
+Same for sd of true rewards. Not changing much. 
+
+
+Doesn't seem to change.
+ 
+
+
+
+
+
+
+
+

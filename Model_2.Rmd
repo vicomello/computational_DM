@@ -1,0 +1,821 @@
+---
+title: "RL model - v2"
+author: "Victoria Oldemburgo de Mello"
+date: '2022-12-20'
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(reshape2)
+parameters = par = params = c(.15, 2.95)
+
+```
+
+# Including learning with punishments
+What if everytime the person got a punishment (negative reward), the accuracy increased?
+How would that influence choice?
+What if learning actually happened?
+
+Make it such that negative rewards in false make people increse their power of discernment!
+If reward is a negative number, people's accuracy increase by .01
+
+```{r}
+
+simulate_p_learns <- function(LR, tau, ntrials, p_tf = .5, p_acc = .5, mean_reward_true = 1, sd_reward_true = .25, mean_reward_false = 1.4, sd_reward_false = .25, backfire_multiplier_f = 5, backfire_multiplier_i = 5, interest_multiplier = .375, sd_interest_multiplier = .1, backfire_false = .05, backfire_interest = .05){
+  
+  # simulating preference of the user
+  interests = sample(c(0,1,2,3), 10, replace = TRUE)
+  acc = NA
+  action_values <- list(c(0, 0))
+  actions <- c(1,2) # 1 is true, 2 is interest
+  action = reward = values_1 = values_2 = stim_veracity = accuracy_tf = NA
+  output <- vector(mode="list", length=8)
+  names(output) <- c("action", "reward", "values_1", "values_2", "interests", "veracity_head", "accuracy", "p_acc")
+  
+  # each trial in the task
+  for(trial in 1:ntrials){
+    # simulating characteristics of the stimulus
+    # this is the topics of the headline
+    stimulus = sample(c(TRUE, FALSE), 10, replace = TRUE, prob = c(.25, .75))
+    # this is the veracity of the headline, p_tf is proportion of true headlines
+    stimulus_veracity <- sample(c(TRUE, FALSE), 1, replace = TRUE, prob = c(p_tf, 1-p_tf))
+    
+    # calculating probabilities based on softmax
+    values <- softmax_prob(action_values[[trial]], actions, tau)
+    values_1[trial] <- values[1]
+    values_2[trial] <- values[2]
+    
+    # selecting action based on softmax
+    action[trial] <- select_action(actions, values)
+    
+    accuracy <- sample(c(1, 0), 1, replace = TRUE, prob = c(p_acc, 1-p_acc))
+    
+    if (action[trial] == 1){ #if truth task is selected
+      
+      reward[trial] <- 
+        if (stimulus_veracity == 1) { # if headline is true
+          if (accuracy == 1){ # if participant correctly guessed it is true
+            rnorm(1, mean = mean_reward_true, sd = sd_reward_true) # reward is small but very certain
+          }
+          else {
+          0 # if he guesses it was false when it's true, no sharing and no rewards
+          }
+     } 
+        else { # if headline is false
+          if(accuracy == 1){
+            0 # if it's fake and participant get it right, don't share and reward = 0
+          }
+        else {
+          sample(c(0, -1), 1, replace = TRUE, prob = c(1-backfire_false, backfire_false)) *
+            rnorm(1, mean = mean_reward_false * backfire_multiplier_f, sd = sd_reward_false) +
+            rnorm(1, mean = mean_reward_false, sd = sd_reward_false)
+          # reward is big (viralizes more easily) but can backfire
+        }
+        }
+    }
+    else { # if interest task is selected
+      # reward 
+      reward[trial] <- sum(interests * stimulus) * rnorm(1, mean = interest_multiplier, sd = sd_interest_multiplier) +
+      sample(c(0, -1), 1, replace = TRUE, prob = c(1-backfire_interest, backfire_interest)) *
+            rnorm(1, mean = mean_reward_false * backfire_multiplier_i, sd = sd_reward_false)
+    }
+    stim_veracity[trial] <- stimulus_veracity
+    accuracy_tf[trial] <- accuracy
+    action_values[[trial+1]] <- update_values(values, action[trial], reward[trial], LR)
+    
+    # if reward is negative and accuracy is smaller than 95 (we don't want it to be 1)
+    if (reward[trial] < 0 & p_acc < .95){
+      # the accuracy increases
+      p_acc = p_acc + .01
+    }
+    acc[trial] = p_acc
+  }
+
+  output[[1]] <- action
+  output[[2]] <- reward
+  output[[3]] <- values_1
+  output[[4]] <- values_2
+  output[[5]] <- interests
+  output[[6]] <- stim_veracity
+  output[[7]] <- accuracy_tf
+  output[[8]] <- acc
+  
+  return(output)
+}
+
+teste <- simulate_p(.5, 1, 100)
+
+# Running it for multiple participants
+sim_decisions_learns <- function(parameters, ntrials, participants,p_tf = .5, p_acc = .5, mean_reward_true = 1, sd_reward_true = .25, mean_reward_false = 1.4, sd_reward_false = .25, backfire_multiplier_f = 5, backfire_multiplier_i = 5, interest_multiplier = .375, sd_interest_multiplier = .1, backfire_false = .05, backfire_interest = .05){
+  # parameters are c(LR, tau)
+  sessions_all <- as.data.frame(matrix(data = NA, ncol = 9, nrow = ntrials))
+  colnames(sessions_all) <- c("participant", "action", "reward", "values_1", "values_2", "interests", "veracity_head", "accuracy", "p_acc")
+  total_data <- vector(mode = "list", length = 0)
+  for (person in 1:participants){
+    
+    session <- simulate_p_learns(parameters[1], parameters[2], ntrials, p_tf, p_acc, mean_reward_true, sd_reward_true, mean_reward_false, sd_reward_false, backfire_multiplier_f, backfire_multiplier_i, interest_multiplier, sd_interest_multiplier, backfire_false, backfire_interest) # LR and tau
+    
+    sessions_all[[1]] <- person
+    sessions_all[[2]] <- session$action
+    sessions_all[[3]] <- session$reward
+    sessions_all[[4]] <- session$values_1
+    sessions_all[[5]] <- session$values_2
+    sessions_all[[6]] <- list(session$interests)
+    sessions_all[[7]] <- session$veracity_head
+    sessions_all[[8]] <- session$accuracy
+    sessions_all[[9]] <- session$p_acc
+    total_data <- rbind(total_data, sessions_all)
+
+  }
+  return(total_data)
+}
+
+teste <- sim_decisions_learns(params, ntrials = 100, participants = 100)
+```
+
+Now let's see what happens with choices and proportion of true/false shared:
+
+First with initial params. it might not be enough iterations to see a difference. so let's try more in the next iteration.
+
+# Examining the behavior of Model 2
+
+first trial: a single participant. Is 100 enough so see some learning?
+```{r}
+
+mean_choices = sd_choices = choices = sds = proportion_true = mean_true = proportion_false = mean_false = NA
+
+output <- sim_decisions_learns(parameters, ntrials = 100, participants = 1)
+
+mean = accuracy = NA
+for (i in 1:nrow(output)){
+  subsetdata <- output[1:i,]
+  mean[i] <- mean(subsetdata$action)
+}
+output$mean <- mean
+
+
+choices_learning <- ggplot(output, aes(x=as.numeric(row.names(output)), y=mean)) + 
+  geom_point(colour="blue", alpha = .5) +
+  geom_line() 
+
+choices_learning
+
+```
+In this example, choices seem to be approaching the mean, but could simply be because we don't have enough iterations. We would actually expect to see a shift towards t/f task.
+
+How did p_acc change in each trial?
+
+```{r}
+
+acc_trial <- ggplot(output, aes(x=as.numeric(row.names(output)), y=p_acc)) + 
+  geom_point(colour="blue", alpha = .5) +
+  geom_line() 
+
+acc_trial
+
+```
+
+People seem to be learning, but it is indeed not enough iterations. 
+
+What about the proportion of true/false headlines shared?
+
+```{r}
+
+true_shared = false_shared = proportion_tf = proportion_ft = NA
+for (i in 1:nrow(output)){
+  subsetdata <- output[1:i,]
+  true_shared = nrow(filter(subsetdata, action==1 & veracity_head==TRUE & accuracy==1 | action==2 & veracity_head==TRUE & reward != 0))
+  false_shared = nrow(filter(subsetdata, action==1 & veracity_head==FALSE & accuracy==0 | action==2 & veracity_head==FALSE & reward != 0))
+  proportion_tf[i] = true_shared / (true_shared + false_shared)
+  proportion_ft[i] = false_shared / (true_shared + false_shared)
+  }
+
+row_n <- as.numeric(row.names(output))
+sims2 <- data.frame(row_n, proportion_tf, proportion_ft)
+sims3 <- melt(sims2, id.vars = c("row_n"))
+
+proportion_wlearning <- ggplot(sims3, aes(x=row_n, y=value, colour=variable)) + 
+  geom_point() +
+  geom_line() 
+
+proportion_wlearning
+
+```
+As people learn, they share more true headlines. 
+
+What if we increase the number of trials by participant?
+
+now it's 1000 trials by participant. 
+
+First let's do it for a single participant:
+```{r}
+
+sims <- sim_decisions_learns(parameters, ntrials = 1000, participants = 1)
+
+mean_action = true_shared = false_shared = proportion_tf = proportion_ft = NA
+for (i in 1:nrow(sims)){
+  subsetdata <- sims[1:i,]
+  mean_action[i] <- mean(subsetdata$action)
+  true_shared = nrow(filter(subsetdata, action==1 & veracity_head==TRUE & accuracy==1 | action==2 & veracity_head==TRUE & reward != 0))
+  false_shared = nrow(filter(subsetdata, action==1 & veracity_head==FALSE & accuracy==0 | action==2 & veracity_head==FALSE & reward != 0))
+  proportion_tf[i] = true_shared / (true_shared + false_shared)
+  proportion_ft[i] = false_shared / (true_shared + false_shared)
+}
+
+sims$mean_action <- mean_action
+sims$proportion_tf <- proportion_tf
+sims$proportion_ft <- proportion_ft
+
+choices_wlearning <- ggplot(sims, aes(x=as.numeric(row.names(sims)), y=mean_action)) + 
+  geom_point(colour="blue") +
+  geom_line() 
+
+choices_wlearning
+
+```
+
+It seems like the mean of choices converge to the truth task as people improve their accuracy.
+We need to iterate many times and over many people to be sure.
+
+What about the proportion of true/false headlines shared?
+
+```{r}
+
+row_n <- as.numeric(row.names(sims))
+sims2 <- data.frame(row_n, proportion_tf, proportion_ft)
+sims3 <- melt(sims2, id.vars = c("row_n"))
+
+proportion_wlearning2 <- ggplot(sims3, aes(x=row_n, y=value, colour=variable)) + 
+  geom_point() +
+  geom_line() 
+
+proportion_wlearning2
+
+```
+
+It seems like this person learned to share more true than fake. 
+
+Does this vary enough by participant? do this and plot for 5 people.
+
+Great, let's not do this for multiple iterations and multiple people. 
+
+```{r}
+
+mean_choices = sd_choices = choices = sds = proportion_true = mean_true = proportion_false = mean_false = NA
+for (n in 1:100){
+  output <- sim_decisions_learns(parameters,ntrials = 100, participants = 100)
+  choices[n] <- mean(output$action)
+  sds[n] <- sd(output$action)
+  true = nrow(filter(output, action==1 & veracity_head==TRUE & accuracy==1 | action==2 & veracity_head==TRUE & reward != 0))
+  false = nrow(filter(output, action==1 & veracity_head==FALSE & accuracy==0 | action==2 & veracity_head==FALSE & reward != 0))
+  proportion_true[n] <- true / (true+false)
+  proportion_false[n] <- false / (true+false)
+}
+
+# do we need this?
+mean(choices) # 1.48
+mean(sds) # .49
+mean(proportion_true) #.507
+mean(proportion_false) #.493
+
+# plotting mean choice per iteration (do this for other model to compare)
+
+nsims <- c(1:100)
+df2 <- data.frame(nsims, choices, proportion_false, proportion_true)
+df3 <- melt(df2, id.vars = c("nsims", "choices"))
+
+repeatedchoices <- ggplot(df2, aes(x=nsims, y=choices)) + 
+  geom_point(colour="blue") +
+  geom_line(colour="blue")
+  
+repeatedchoices
+
+```
+ the choices seemed to have remained the same (for 100 trials).
+ Same for proportion of true/false.
+ 
+ What if we increase the number of iterations per participant?
+ 
+```{r}
+ 
+mean_choices = sd_choices = choices = sds = proportion_true = mean_true = proportion_false = mean_false = NA
+
+# 100 simulations of 100 participants doing 1000 trials
+for (n in 1:100){
+  output <- sim_decisions_learns(parameters, ntrials = 1000, participants = 100)
+  choices[n] <- mean(output$action)
+  sds[n] <- sd(output$action)
+  true = nrow(filter(output, action==1 & veracity_head==TRUE & accuracy==1 | action==2 & veracity_head==TRUE & reward != 0))
+  false = nrow(filter(output, action==1 & veracity_head==FALSE & accuracy==0 | action==2 & veracity_head==FALSE & reward != 0))
+  proportion_true[n] <- true / (true+false)
+  proportion_false[n] <- false / (true+false)
+}
+
+# do we need this?
+mean(choices) # choices are now for truth task (1.39)
+mean(sds) # .488
+mean(proportion_true) #.56
+mean(proportion_false) #.43
+
+# plotting mean choice per iteration (do this for other model to compare)
+
+nsims <- c(1:100)
+df4 <- data.frame(nsims, choices, proportion_false, proportion_true)
+
+repeatedchoices2 <- ggplot(df4, aes(x=nsims, y=choices)) + 
+  geom_point(colour="blue") +
+  geom_line(colour="blue") +
+  ylim(1.36, 1.43)
+  
+repeatedchoices2
+ 
+ 
+```
+
+Now that we calculate the mean over iterations, choices are more stable around 1.39
+(Preference for truth)
+
+Now let's see what happens to proportion of true/false
+```{r}
+
+df5 <- melt(df4, id.vars = c("nsims", "choices"))
+
+proportion_wlearning3 <- ggplot(df5, aes(x=nsims, y=value, colour=variable)) + 
+  geom_point() +
+  geom_line() 
+
+proportion_wlearning3
+
+```
+
+People are sharing the true headlines more often.
+
+What is the average p_acc in the end of the experiment for each participant?
+```{r}
+
+p_acc_list = NA
+for (i in 1:50) {
+  output <- sim_decisions_learns(parameters, ntrials = 100, participants = 50)
+  p_acc_list[i] <- output$p_acc[100]
+}
+
+p_acc_list
+mean(p_acc_list)
+
+```
+
+This is all great. Now if odds of backfire increases, do people learn faster?
+
+# Examining the effect for backfiring
+
+## Increasing the Odds of Backfiring for sharing false information
+
+```{r}
+
+backfire_multipliers = seq(from=1, to=20, by=1)
+
+mean_choices = sd_choices = choices = sds = proportion_true = mean_true = proportion_false = mean_false = NA
+for (i in 1:20) {
+  x = backfire_multipliers[i]
+  for (n in 1:50) {
+    output <- sim_decisions_learns(parameters,ntrials = 1000, participants = 100, backfire_false = .05 * x)
+    choices[n] <- mean(output$action)
+    sds[n] <- sd(output$action)
+    true = nrow(filter(output, action==1 & veracity_head==TRUE & accuracy==1 | action==2 & veracity_head==TRUE & reward != 0))
+    false = nrow(filter(output, action==1 & veracity_head==FALSE & accuracy==0 | action==2 & veracity_head==FALSE & reward != 0))
+    proportion_true[n] <- true / (true+false)
+    proportion_false[n] <- false / (true+false)
+  }
+  mean_choices[i] <- mean(choices)
+  sd_choices[i] <- mean(sds)
+  mean_true[i] <- mean(proportion_true)
+  mean_false[i] <- mean(proportion_false)
+}
+
+
+odds_backfire <- backfire_multipliers * .05
+df6 <- data.frame(mean_choices, sd_choices, odds_backfire, mean_true, mean_false)
+backfire_choices2 <- ggplot(df6, aes(x=odds_backfire, y=mean_choices)) + 
+  geom_point(colour="blue") +
+  geom_line(colour="blue")
+
+backfire_choices2
+
+```
+
+If backfire for sharing false increases, people do the interesting task more often.
+This is not ideal.
+
+Proportion true false in the simulation
+```{r}
+
+df7 <- melt(df6, id.vars = c("odds_backfire", "mean_choices", "sd_choices"))
+
+proportion_wlearning4 <- ggplot(df7, aes(x=odds_backfire, y=value, colour=variable)) + 
+  geom_point() +
+  geom_line() +
+  ylab("t/f proportion")
+
+proportion_wlearning4
+
+```
+
+People learn to differentiate the two.
+the choices seem to get stable after .25 odds of backfiring
+
+## Effects of increasing odds of Backfiring for sharing interesting
+
+```{r}
+backfire_multipliers = seq(from=1, to=20, by=1)
+
+mean_choices = sd_choices = choices = sds = proportion_true = mean_true = proportion_false = mean_false = NA
+for (i in 1:20) {
+  x = backfire_multipliers[i]
+  for (n in 1:50) {
+    output <- sim_decisions_learns(parameters,ntrials = 1000, participants = 100, backfire_interest = .05 * x)
+    choices[n] <- mean(output$action)
+    sds[n] <- sd(output$action)
+    true = nrow(filter(output, action==1 & veracity_head==TRUE & accuracy==1 | action==2 & veracity_head==TRUE & reward != 0))
+    false = nrow(filter(output, action==1 & veracity_head==FALSE & accuracy==0 | action==2 & veracity_head==FALSE & reward != 0))
+    proportion_true[n] <- true / (true+false)
+    proportion_false[n] <- false / (true+false)
+  }
+  mean_choices[i] <- mean(choices)
+  sd_choices[i] <- mean(sds)
+  mean_true[i] <- mean(proportion_true)
+  mean_false[i] <- mean(proportion_false)
+}
+
+
+odds_backfire <- backfire_multipliers * .05
+df8 <- data.frame(mean_choices, sd_choices, odds_backfire, mean_true, mean_false)
+backfire_choices3 <- ggplot(df8, aes(x=odds_backfire, y=mean_choices)) + 
+  geom_point(colour="blue") +
+  geom_line(colour="blue")
+
+backfire_choices3
+
+```
+
+As backfire for interesting increases, the truth task is selected way more often.
+
+Proportion true/false
+
+```{r}
+
+df9 <- melt(df8, id.vars = c("odds_backfire", "mean_choices", "sd_choices"))
+
+proportion_wlearning5 <- ggplot(df9, aes(x=odds_backfire, y=value, colour=variable)) + 
+  geom_point() +
+  geom_line() 
+
+proportion_wlearning5
+
+```
+
+With increased odds of backfiring for interesting headlines, the proportion of true headlines increases.
+
+## Increasing odds of backfiring for both false sharing and interesting
+
+```{r}
+
+backfire_multipliers = seq(from=1, to=20, by=1)
+
+mean_choices = sd_choices = choices = sds = proportion_true = mean_true = proportion_false = mean_false = NA
+for (i in 1:20) {
+  x = backfire_multipliers[i]
+  for (n in 1:50) {
+    output <- sim_decisions_learns(parameters,ntrials = 1000, participants = 100, backfire_interest = .05 * x, backfire_false = .05 * x)
+    choices[n] <- mean(output$action)
+    sds[n] <- sd(output$action)
+    true = nrow(filter(output, action==1 & veracity_head==TRUE & accuracy==1 | action==2 & veracity_head==TRUE & reward != 0))
+    false = nrow(filter(output, action==1 & veracity_head==FALSE & accuracy==0 | action==2 & veracity_head==FALSE & reward != 0))
+    proportion_true[n] <- true / (true+false)
+    proportion_false[n] <- false / (true+false)
+  }
+  mean_choices[i] <- mean(choices)
+  sd_choices[i] <- mean(sds)
+  mean_true[i] <- mean(proportion_true)
+  mean_false[i] <- mean(proportion_false)
+}
+
+
+odds_backfire <- backfire_multipliers * .05
+df10 <- data.frame(mean_choices, sd_choices, odds_backfire, mean_true, mean_false)
+backfire_choices4 <- ggplot(df10, aes(x=odds_backfire, y=mean_choices)) + 
+  geom_point(colour="blue") +
+  geom_line(colour="blue")
+
+backfire_choices4
+
+
+```
+
+
+Proportion of true / false
+
+```{r}
+
+df11 <- melt(df10, id.vars = c("odds_backfire", "mean_choices", "sd_choices"))
+
+proportion_wlearning5 <- ggplot(df11, aes(x=odds_backfire, y=value, colour=variable)) + 
+  geom_point() +
+  geom_line() +
+  ylab("t/f proportion")
+
+proportion_wlearning5
+
+```
+
+With increased iterations of learning the accuracy, people prefer the true task.
+
+# Examining the effects of increasing rewards
+
+## Increasing rewards for sharing false
+
+```{r}
+reward_multipliers = seq(from=1, to=2, by=.1)
+
+# mean for false news is 1.4. what happens if we increase the magnitude of this reward by 10 percent?
+mean_choices = sd_choices = choices = sds = proportion_true = mean_true = proportion_false = mean_false = NA
+for (i in 1:11) {
+  reward_multiplier = reward_multipliers[i]
+  for (n in 1:50) {
+    output <- sim_decisions_learns(parameters, ntrials = 100, participant = 100, mean_reward_false = 1.4 * reward_multiplier)
+    true = nrow(filter(output, action==1 & veracity_head==TRUE & accuracy==1 | action==2 & veracity_head==TRUE & reward != 0))
+    false = nrow(filter(output, action==1 & veracity_head==FALSE & accuracy==0 | action==2 & veracity_head==FALSE & reward != 0))
+    proportion_true[n] <- true / (true+false)
+    proportion_false[n] <- false / (true+false)
+    choices[n] <- mean(output$action)
+    sds[n] <- sd(output$action)
+  }
+  mean_choices[i] <- mean(choices)
+  sd_choices[i] <- mean(sds)
+  mean_true[i] <- mean(proportion_true)
+  mean_false[i] <- mean(proportion_false)
+  
+}
+
+data_5 <- data.frame(mean_choices, sd_choices, mean_true, mean_false, reward_multipliers)
+
+rewardbychoices_4 <- ggplot(data_5, aes(x=reward_multipliers, y=mean_choices)) + 
+  geom_point(colour="blue") +
+  geom_line(colour="blue") +
+  ggtitle("Choice / Reward for False")
+  
+rewardbychoices_4
+
+data_6 <- melt(data_5, id.vars = c( "mean_choices", "sd_choices", "reward_multipliers"))
+
+proportion_tf5 <- ggplot(data_6, aes(x=reward_multipliers, y=value, colour=variable)) + 
+  geom_point() +
+  geom_line() +
+  ylab("proportion of true/false headlines") +
+  #ylim(.48, .52) +
+  ggtitle("R: False")
+
+proportion_tf5
+
+```
+
+
+## increasing rewards for sharing true
+
+```{r}
+reward_multipliers = seq(from=1, to=2, by=.1)
+
+#TODO
+
+# mean for false news is 1.4. what happens if we increase the magnitude of this reward by 10 percent?
+mean_choices = sd_choices = choices = sds = proportion_true = mean_true = proportion_false = mean_false = NA
+for (i in 1:11) {
+  reward_multiplier = reward_multipliers[i]
+  for (n in 1:50) {
+    output <- sim_decisions_learns(parameters, ntrials = 100, participant = 100, mean_reward_true = 1 * reward_multiplier)
+    true = nrow(filter(output, action==1 & veracity_head==TRUE & accuracy==1 | action==2 & veracity_head==TRUE & reward != 0))
+    false = nrow(filter(output, action==1 & veracity_head==FALSE & accuracy==0 | action==2 & veracity_head==FALSE & reward != 0))
+    proportion_true[n] <- true / (true+false)
+    proportion_false[n] <- false / (true+false)
+    choices[n] <- mean(output$action)
+    sds[n] <- sd(output$action)
+  }
+  mean_choices[i] <- mean(choices)
+  sd_choices[i] <- mean(sds)
+  mean_true[i] <- mean(proportion_true)
+  mean_false[i] <- mean(proportion_false)
+  
+}
+
+
+data_7 <- data.frame(mean_choices, sd_choices, mean_true, mean_false, reward_multipliers)
+
+rewardbychoices_5 <- ggplot(data_7, aes(x=reward_multipliers, y=mean_choices)) + 
+  geom_point(colour="blue") +
+  geom_line(colour="blue") +
+  ggtitle("Choice / Reward for True")
+  
+rewardbychoices_5
+
+
+data_8 <- melt(data_7, id.vars = c( "mean_choices", "sd_choices", "reward_multipliers"))
+
+proportion_tf6 <- ggplot(data_8, aes(x=reward_multipliers, y=value, colour=variable)) + 
+  geom_point() +
+  geom_line() +
+  ylab("proportion of true/false headlines") +
+  ylim(.48, .52) +
+  ggtitle("R: True")
+
+proportion_tf6
+
+```
+
+
+## Increasing rewards for sharing interesting
+
+```{r}
+reward_multipliers = seq(from=1, to=2, by=.1)
+
+#TODO
+
+# mean for false news is 1.4. what happens if we increase the magnitude of this reward by 10 percent?
+mean_choices = sd_choices = choices = sds = proportion_true = mean_true = proportion_false = mean_false = NA
+for (i in 1:11) {
+  reward_multiplier = reward_multipliers[i]
+  for (n in 1:50) {
+    output <- sim_decisions_learns(parameters, ntrials = 100, participant = 100, interest_multiplier = .375 * reward_multiplier)
+    true = nrow(filter(output, action==1 & veracity_head==TRUE & accuracy==1 | action==2 & veracity_head==TRUE & reward != 0))
+    false = nrow(filter(output, action==1 & veracity_head==FALSE & accuracy==0 | action==2 & veracity_head==FALSE & reward != 0))
+    proportion_true[n] <- true / (true+false)
+    proportion_false[n] <- false / (true+false)
+    choices[n] <- mean(output$action)
+    sds[n] <- sd(output$action)
+  }
+  mean_choices[i] <- mean(choices)
+  sd_choices[i] <- mean(sds)
+  mean_true[i] <- mean(proportion_true)
+  mean_false[i] <- mean(proportion_false)
+  
+}
+
+
+data_9 <- data.frame(mean_choices, sd_choices, mean_true, mean_false, reward_multipliers)
+
+rewardbychoices_6 <- ggplot(data_9, aes(x=reward_multipliers, y=mean_choices)) + 
+  geom_point(colour="blue") +
+  geom_line(colour="blue") +
+  ggtitle("Choice / Reward for Interesting")
+  
+rewardbychoices_6
+
+
+data_10 <- melt(data_9, id.vars = c( "mean_choices", "sd_choices", "reward_multipliers"))
+
+proportion_tf7 <- ggplot(data_10, aes(x=reward_multipliers, y=value, colour=variable)) + 
+  geom_point() +
+  geom_line() +
+  ylab("proportion of true/false headlines") +
+  ylim(.48, .52) +
+  ggtitle("R: Interesting")
+
+proportion_tf7
+
+```
+
+# Combined plots
+
+```{r}
+
+model1_reward_false <- data 
+model1_reward_true <- data_2
+model1_reward_interesting <- data_3
+model2_reward_false <- data_5
+model2_reward_true <- data_7
+model2_reward_interesting <- data_9
+
+model1_reward_false <- select(data, c(mean_choices, reward_multipliers))
+model1_reward_false$type <- "Model_1_False"
+model1_reward_true <- select(data_2, c(mean_choices, reward_multipliers))
+model1_reward_true$type <- "Model_1_True"
+model1_reward_interesting <- select(data_3, c(mean_choices, reward_multipliers))
+model1_reward_interesting$type <- "Model_1_Interesting"
+
+model2_reward_false <- select(data_5, c(mean_choices, reward_multipliers))
+model2_reward_false$type <- "Model_2_False"
+model2_reward_true <- select(data_7, c(mean_choices, reward_multipliers))
+model2_reward_true$type <- "Model_2_True"
+model2_reward_interesting <- select(data_9, c(mean_choices, reward_multipliers))
+model2_reward_interesting$type <- "Model_2_Interesting"
+
+final_df <- do.call("rbind", list(model1_reward_false, model1_reward_true,
+                                  model1_reward_interesting, model2_reward_false,
+                                  model2_reward_true, model2_reward_interesting))
+
+
+
+
+
+choices_rewards <- ggplot(final_df, aes(x=reward_multipliers, y=mean_choices, colour=type)) + 
+  geom_point() +
+  geom_line() +
+  ggtitle("Choices as function of increased rewards")
+
+choices_rewards
+```
+
+
+```{r}
+library(gridExtra)
+
+proportion_tf_1
+proportion_tf2
+proportion_tf3
+
+grid.arrange(proportion_tf_1, proportion_tf2, proportion_tf3, ncol=3)
+
+```
+
+
+
+```{r}
+model1_backfire_false <- data7
+model1_backfire_interesting <- data9
+model2_backfire_false <- df6
+model2_backfire_interesting <- df8
+
+model1_backfire_false <- select(data7, c("mean_choices", "odds_backfire"))
+model1_backfire_false$type <- "model1_false"
+
+model1_backfire_interesting <- select(data9, c("mean_choices", "odds_backfire"))
+model1_backfire_interesting$type <- "model1_interesting"
+
+model2_backfire_false <- select(df6, c("mean_choices", "odds_backfire"))
+model2_backfire_false$type <- "model2_false"
+
+model2_backfire_interesting <- select(df8, c("mean_choices", "odds_backfire"))
+model2_backfire_interesting$type <- "model2_interesting"
+
+
+final_data <- do.call("rbind", list(model1_backfire_false,
+                                  model1_backfire_interesting,
+                                  model2_backfire_false,
+                                  model2_backfire_interesting))
+
+
+
+choices_backfire <- ggplot(final_data, aes(x=odds_backfire, y=mean_choices, colour=type)) + 
+  geom_point() +
+  geom_line() +
+  ggtitle("Choices as function of odds of backfiring")
+
+choices_backfire
+
+
+
+```
+
+```{r}
+
+#model 2 reward true
+proportion_tf6
+
+# model 2 reward for interesting
+proportion_tf7
+
+# model 2 rewards for false
+proportion_tf5
+
+grid.arrange(proportion_tf6, proportion_tf7, proportion_tf5, ncol=3)
+
+```
+
+```{r}
+
+# model 1
+
+# false
+proportion_tf_3
+
+# interesting
+proportion_tf_4
+
+
+# model 2
+
+# false 
+proportion_wlearning4
+# interesting
+proportion_wlearning5
+
+grid.arrange(proportion_tf_3, proportion_tf_4, proportion_wlearning4,proportion_wlearning5, ncol=2, nrow=2)
+
+
+```
+
+
+
+
+
+
+
